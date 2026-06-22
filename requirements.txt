@@ -1,5 +1,5 @@
 # requirements.txt
 fastapi
-uvicorn
 httpx
+uvicorn[standard]
 playwright
