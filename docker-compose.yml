@@ -1,0 +1,7 @@
+services:
+  terabox-api:
+    build: .
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    shm_size: '256mb'   # Chromium needs this
