@@ -1,6 +1,5 @@
 # main.py
 import asyncio
-import httpx
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse
 from playwright.async_api import async_playwright
@@ -9,10 +8,6 @@ app = FastAPI(title="TeraBox Downloader API")
 
 
 async def scrape_via_playwright(terabox_url: str) -> dict:
-    """
-    Load tboxdownloader.in in a headless browser, paste the URL,
-    intercept all API requests/responses to find real endpoints + data.
-    """
     api_calls = []
 
     async with async_playwright() as p:
@@ -25,7 +20,6 @@ async def scrape_via_playwright(terabox_url: str) -> dict:
         # Intercept all fetch/XHR responses
         async def handle_response(response):
             url = response.url
-            # Capture anything that looks like an API call (JSON responses)
             if any(x in url for x in ["/api", "terabox", "download", "file", "fetch"]):
                 try:
                     body = await response.json()
@@ -41,41 +35,41 @@ async def scrape_via_playwright(terabox_url: str) -> dict:
 
         await page.goto("https://tboxdownloader.in/", wait_until="networkidle")
 
-        # Paste URL into input and click submit
+        # Paste URL and submit
         await page.fill("#urlInput", terabox_url)
         await page.click("#submitBtn")
 
-        # Wait for results to appear (file list populated)
+        # Wait for file list
         try:
             await page.wait_for_selector(".file-item", timeout=20000)
         except Exception:
             pass
 
-        # Click the first file item to open modal
+        # Click first file item to open modal
         try:
             await page.click(".file-item", timeout=5000)
             await page.wait_for_selector("#fileModal:not(.hidden)", timeout=5000)
         except Exception:
             pass
 
-        # Click "Get Direct Download Link"
+        # Click get download link button
         try:
             await page.click("#genDownloadBtn", timeout=5000)
-            await page.wait_for_selector("#finalDownloadLink", timeout=15000)
+            await page.wait_for_selector("#downloadResult:not(.hidden)", timeout=15000)
         except Exception:
             pass
 
-        # Extra wait to capture all API responses
+        # Extra wait for all API responses to settle
         await asyncio.sleep(3)
 
-        # Also grab what's rendered in the DOM as fallback
-        download_link = await page.input_value("#finalDownloadLink").catch(lambda _: "") if hasattr(page, "input_value") else ""
+        # Safely grab download link from DOM
+        download_link = ""
         try:
             download_link = await page.locator("#finalDownloadLink").input_value(timeout=3000)
         except Exception:
-            download_link = ""
+            pass
 
-        # Grab file list info from DOM
+        # Grab file list from DOM
         files_data = await page.evaluate("""() => {
             const items = document.querySelectorAll('.file-item');
             return Array.from(items).map(item => ({
@@ -103,24 +97,24 @@ async def get_download_link(url: str = Query(..., description="TeraBox share URL
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Scraping failed: {str(e)}")
 
-    # Try to find download link from intercepted API calls first
     download_link = result.get("download_link", "")
 
-    for call in result["api_calls"]:
-        body = call["body"]
-        # Common field names used by terabox downloader tools
-        for key in ["download_link", "dlink", "url", "link", "direct_link", "downloadUrl"]:
-            if isinstance(body, dict) and body.get(key):
-                download_link = body[key]
+    # Try to find download link from intercepted API calls
+    if not download_link:
+        for call in result["api_calls"]:
+            body = call["body"]
+            if isinstance(body, dict):
+                for key in ["download_link", "dlink", "url", "link", "direct_link", "downloadUrl"]:
+                    if body.get(key):
+                        download_link = body[key]
+                        break
+            if download_link:
                 break
-        if download_link:
-            break
 
     if not download_link:
-        # Return raw api_calls so you can debug and find the real fields
         return JSONResponse(content={
             "status": "debug",
-            "message": "Could not extract download link. Check api_calls to find the real field names.",
+            "message": "Could not extract download link. Check api_calls to find real field names.",
             "files": result["files"],
             "api_calls": result["api_calls"],
         })
